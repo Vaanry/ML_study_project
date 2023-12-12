@@ -4,12 +4,13 @@ from sqlalchemy.orm import Session
 from typing import List
 from database import SessionLocal
 from models import User, Post, Feed
-from schema import PostGet, UserGet, FeedGet
+from schema import PostGet, UserGet, FeedGet, Response
 from datetime import timedelta
 import datetime
 from load_model import load_models
 from load_features import load_features
-import pandas as pd
+from get_recommendation import get_exp_group, model_control, model_test, get_recomendation
+from loguru import logger
 
 app = FastAPI()
 
@@ -46,29 +47,32 @@ def post_recommendations(id=None, limit=10, db: Session = Depends(get_db)):
         func.count(Feed.post_id).desc()).limit(limit)
 
 
-model = load_models()
-user_features = load_features()
+control_model = load_models('catboost_model')
+test_model = load_models('new_catboost_model')
 
-@app.get("/post/recommendations/", response_model=List[PostGet])
+user_features = load_features(user_features)
+user_features_2 = load_features(user_features_2)
+
+'''В endpoint-е для построения рекомендаций используйте функцию для определения группы пользователя, в соответствии с этим вызывайте нужную функцию для построение рекомендаций, логируйте, какая модель применялась (на практике часто опираются на эти логи при обсчёта A/B экспериментов). Не забудь в ответе endpoint-а указать группу, в которую попал пользователь ("control" или "test").'''
+
+@app.get("/post/recommendations/", response_model=Response)
 def recommended_posts(
         id: int,
         time: datetime,
         limit: int = 10,
         db: Session = Depends(get_db)) -> List[PostGet]:
-    end_time = time + timedelta(hours=1)
-    user_info = ['user_id', 'gender', 'age', 'country', 'city', 'os', 'source', 'user_rate']
-    X = user_features[(user_features['user_id']==id)]
-    Y = user_features[~(user_features['user_id'] == id)]
-    Y = Y[(pd.to_datetime(Y['timestamp']) >= time) & (pd.to_datetime(Y['timestamp']) < end_time)]
-    Y = Y.drop(['index', 'Unnamed: 0'], axis=1)
-    Y = Y.drop(user_info, axis=1)
-    Y['user_id'] = id
-    for col in user_info:
-        Y[col] = X[X['user_id'] == id][col][0]
+    exp_group = get_exp_group(id)
+    
+    logger.info(f"user_id: {id}")
+    logger.info(f"exp_group: {exp_group}")
+    
+    if exp_group == 'control':
+        recommendations = model_control(id, time, limit)
+    elif exp_group == 'test':
+        recommendations = model_test(id, time, limit)
+    else:
+        raise ValueError('unknown group')
+    logger.info(recommendations)
+    return db.query(Post.id, Post.text, Post.topic).filter(Post.id.in_(recommendations)).all()
 
-    Y_train = Y.drop(['index', 'Unnamed: 0', 'user_id', 'post_id', 'exp_group', 'text', 'timestamp'], axis=1)
-    Y['prob'] = model.predict_proba(Y_train)[:, 1]
-    Y['pred'] = model.predict(Y_train)
-    posts = Y[Y['pred'] == 1].sort_values(by='prob', ascending=False)['post_id'][:limit].to_list()
-    return db.query(Post.id, Post.text, Post.topic).filter(Post.id.in_(posts)).all()
 

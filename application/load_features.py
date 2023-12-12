@@ -14,8 +14,8 @@ def batch_load_sql(query: str) -> pd.DataFrame:
     conn.close()
     return pd.concat(chunks, ignore_index=True)
 
-def load_features() -> pd.DataFrame:
-    query = 'SELECT * FROM user_features'
+def load_features(version) -> pd.DataFrame:
+    query = f'SELECT * FROM {version}'
     user_features = batch_load_sql(query)
     return user_features
 
